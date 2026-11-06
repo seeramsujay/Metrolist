@@ -576,6 +576,7 @@ class ListenTogetherClient
 
         private var webSocket: WebSocket? = null
         private var pingJob: Job? = null
+        private var syncBurstJob: Job? = null
         private var reconnectAttempts = 0
         private var backgroundDisconnectJob: Job? = null
 
@@ -784,6 +785,8 @@ class ListenTogetherClient
             releaseWakeLock() // Release wake lock when disconnecting
             pingJob?.cancel()
             pingJob = null
+            syncBurstJob?.cancel()
+            syncBurstJob = null
             serverClock.reset()
             lastPlaybackRevision.set(0L)
             webSocket?.close(1000, "User disconnected")
@@ -809,27 +812,20 @@ class ListenTogetherClient
         }
 
         /**
-         * Starts the background ping coroutine for keepalive and high-precision NTP clock synchronization.
-         * Dispatches a fast burst of 5 pings upon connection to rapidly populate ServerClock's
-         * sliding window, followed by steady-state pings every 5s when in a room (25s when idle).
+         * Runs periodic ping keepalives and clock synchronization.
+         * Sends an initial 5-ping burst on connect, then pings every 5s in rooms (25s when idle).
          */
         private fun startPingJob() {
             pingJob?.cancel()
             pingJob =
                 scope.launch {
-                    // Fast burst upon connection to establish a tight minimum-RTT clock offset
                     repeat(5) {
                         sendTimeSyncPing()
                         delay(INITIAL_PING_INTERVAL_MS)
                     }
                     while (true) {
-                        // Refresh the WakeLock on every ping cycle so it never expires while the
-                        // connection is active. Without this, the 10-minute timeout can lapse during
-                        // long sessions with the screen off, allowing the CPU to throttle and
-                        // causing the WebSocket to degrade, resulting in choppy audio.
                         acquireWakeLock()
                         sendTimeSyncPing()
-                        // Use tighter 5-second interval during active rooms to maintain sub-5ms clock tracking
                         val interval = if (isInRoom) PING_INTERVAL_IN_ROOM_MS else PING_INTERVAL_MS
                         delay(interval)
                     }
@@ -837,18 +833,25 @@ class ListenTogetherClient
         }
 
         /**
-         * Dispatches a rapid burst of pings (100ms apart) to immediately refresh the min-RTT clock estimate.
-         * Called on track changes, buffer completion, and seeks to eliminate transient network drift.
+         * Dispatches a 3-ping burst (100ms interval) to refresh clock offset on playback transitions.
+         * Coalesces with in-flight bursts and terminates if disconnected.
          */
         fun triggerSyncBurst() {
-            scope.launch {
-                repeat(3) {
-                    sendTimeSyncPing()
-                    delay(INITIAL_PING_INTERVAL_MS)
+            if (_connectionState.value != ConnectionState.CONNECTED) return
+            syncBurstJob?.cancel()
+            syncBurstJob =
+                scope.launch {
+                    repeat(3) {
+                        if (_connectionState.value != ConnectionState.CONNECTED) return@launch
+                        sendTimeSyncPing()
+                        delay(INITIAL_PING_INTERVAL_MS)
+                    }
                 }
-            }
         }
 
+        /**
+         * Dispatches a time synchronization ping with local monotonic timestamp.
+         */
         private fun sendTimeSyncPing() {
             sendMessage(
                 MessageTypes.PING,
@@ -876,6 +879,9 @@ class ListenTogetherClient
             }
         }
 
+        /**
+         * Acquires or refreshes the partial wake lock to keep WebSocket and audio pipeline active.
+         */
         @Suppress("DEPRECATION")
         private fun acquireWakeLock() {
             if (wakeLock == null) {
@@ -886,19 +892,21 @@ class ListenTogetherClient
                         "Metrolist:ListenTogether",
                     )
             }
-            // Always release before acquiring so that the timeout is reset on each call.
-            // This is safe because the ping job calls acquireWakeLock() every PING_INTERVAL_MS
-            // (25 s), ensuring the lock is refreshed well before the 10-minute window elapses.
-            // Without the release-and-reacquire pattern the first acquire() sets the countdown
-            // and subsequent calls while isHeld is true are no-ops, so the lock would still
-            // expire after 10 minutes of continuous screen-off sessions.
-            if (wakeLock?.isHeld == true) {
+            val isRefresh = wakeLock?.isHeld == true
+            if (isRefresh) {
                 wakeLock?.release()
             }
             wakeLock?.acquire(10 * 60 * 1000L)
-            log(LogLevel.DEBUG, "Wake lock acquired")
+            if (isRefresh) {
+                Timber.tag(TAG).d("Wake lock refreshed")
+            } else {
+                log(LogLevel.DEBUG, "Wake lock acquired")
+            }
         }
 
+        /**
+         * Releases the partial wake lock when disconnecting or exiting a room.
+         */
         private fun releaseWakeLock() {
             if (wakeLock?.isHeld == true) {
                 wakeLock?.release()
@@ -1031,9 +1039,14 @@ class ListenTogetherClient
             }
         }
 
+        /**
+         * Cleans up connection jobs and clock state on disconnect, attempting reconnection if in a room.
+         */
         private fun handleDisconnect() {
             pingJob?.cancel()
             pingJob = null
+            syncBurstJob?.cancel()
+            syncBurstJob = null
             serverClock.reset()
 
             // Don't clear room state - we might reconnect
@@ -1052,9 +1065,14 @@ class ListenTogetherClient
             evaluateBackgroundDisconnectPolicy("socket_disconnected")
         }
 
+        /**
+         * Handles transport-level connection failures with exponential backoff reconnection.
+         */
         private fun handleConnectionFailure(t: Throwable) {
             pingJob?.cancel()
             pingJob = null
+            syncBurstJob?.cancel()
+            syncBurstJob = null
 
             // Always try to reconnect if we have a session token or pending action
             val shouldReconnect = sessionToken != null || _roomState.value != null || pendingAction != null
@@ -1541,7 +1559,7 @@ class ListenTogetherClient
                                 )
                             if (firstSample && _role.value == RoomRole.GUEST) requestSync()
                         }
-                        log(LogLevel.DEBUG, "Pong received")
+                        Timber.tag(TAG).d("Pong received")
                     }
 
                     MessageTypes.RECONNECTED -> {
