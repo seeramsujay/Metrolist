@@ -19,20 +19,20 @@ concurrency:
 
 jobs:
   build:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           java-version: 21
           distribution: "temurin"
 
       - name: Set Up Gradle
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: true
           cache-cleanup: on-success
@@ -42,7 +42,7 @@ jobs:
 
       - name: Restore PR debug keystore
         id: pr_keystore
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@v4
         with:
           path: app/pr-debug.keystore
           key: pr-debug-keystore-${{ github.event.number }}
@@ -62,7 +62,7 @@ jobs:
 
       - name: Save PR debug keystore
         if: steps.pr_keystore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@v4
         with:
           path: app/pr-debug.keystore
           key: ${{ steps.pr_keystore.outputs.cache-primary-key }}
@@ -79,7 +79,7 @@ jobs:
           LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
 
       - name: Upload APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: app-universal-debug-pr-${{ github.event.number }}
           path: app/build/outputs/apk/gms/debug/*.apk
