@@ -1,3 +1,20 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="Metrolist Logo" width="120" height="120" />
+</p>
+
+<h1 align="center">Metrolist</h1>
+
+<p align="center">
+  <em>YouTube Music client for Android</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Status-Maintained-success?style=flat-square" alt="Status" />
+  <img src="https://img.shields.io/badge/License-Protected-blue?style=flat-square" alt="License" />
+</p>
+
+---
+
 <div style="display: flex; gap: 1rem;">
   <img src="fastlane/metadata/android/en-US/images/icon.png" alt="Metrolist app icon" width="200" height="200" />
   <div>
